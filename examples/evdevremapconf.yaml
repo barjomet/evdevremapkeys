@@ -1,0 +1,103 @@
+run_shell_on_start: setxkbmap -option grp:shift_caps_switch,grp:shifts_toggle,compose:ralt  us,ru,ua
+pointer_emulation:
+  delay: 1 #ms
+  repeat_interval: 10 #ms
+  acceleration_time: 300 #ms
+  max_speed: 2000 # pixels/sec
+devices:
+- input_name: 'AT Translated Set 2 keyboard'
+  output_name: 'bad-ass-kbd'
+  remappings:
+    KEY_SPACE:
+    - modifier_group: mod1
+    KEY_DOT:
+    - modifier_group: mod2
+    KEY_SLASH:
+    - modifier_group: mod2
+    KEY_CAPSLOCK:
+    - hold: KEY_LEFTCTRL
+      tap: KEY_ESC
+    KEY_LEFTCTRL:
+    - KEY_CAPSLOCK
+  modifier_groups:
+    mod1:
+      KEY_E:
+      - shell: sudo xkb-switch -s us
+      KEY_R:
+      - shell: sudo xkb-switch -s ru
+      KEY_U:
+      - shell: sudo xkb-switch -s ua
+      KEY_BACKSPACE:
+      - code: KEY_DELETE
+      KEY_H:
+      - code: KEY_LEFT
+      KEY_J:
+      - code: KEY_DOWN
+      KEY_K:
+      - code: KEY_UP
+      KEY_L:
+      - code: KEY_RIGHT
+      KEY_N:
+      - code: KEY_HOME
+      KEY_M:
+      - code: KEY_PAGEDOWN
+      KEY_COMMA:
+      - code: KEY_PAGEUP
+      KEY_DOT:
+      - code: KEY_END
+      KEY_F1:
+      - code: KEY_BACK
+      KEY_F2:
+      - code: KEY_REFRESH
+      KEY_F3:
+      - code: KEY_SCROLLDOWN
+      KEY_F4:
+      - code: KEY_SCROLLUP
+      KEY_F5:
+      - code: KEY_BRIGHTNESSDOWN
+      KEY_F6:
+      - code: KEY_BRIGHTNESSUP
+      KEY_F7:
+      - code: KEY_PLAYPAUSE
+      KEY_F8:
+      - code: KEY_MUTE
+      KEY_F9:
+      - code: KEY_VOLUMEDOWN
+      KEY_F10:
+      - code: KEY_VOLUMEUP
+      KEY_F11:
+      - code: KEY_F12
+    mod2:
+      KEY_Y:
+      - code: KEY_NUMLOCK
+      KEY_U:
+      - code: BTN_LEFT
+      KEY_I:
+      - code: BTN_RIGHT
+      KEY_H:
+      - code: REL_X
+        type: EV_REL
+        value: -POINTER_SPEED
+        repeat: true
+        rate: 0.01
+      KEY_J:
+      - code: REL_Y
+        type: EV_REL
+        value: POINTER_SPEED
+        repeat: true
+        rate: 0.01
+      KEY_K:
+      - code: REL_Y
+        type: EV_REL
+        value: -POINTER_SPEED
+        repeat: true
+        rate: 0.01
+      KEY_L:
+      - code: REL_X
+        type: EV_REL
+        value: POINTER_SPEED
+        repeat: true
+        rate: 0.01
+
+
+

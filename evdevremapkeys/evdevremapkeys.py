@@ -24,8 +24,10 @@
 import argparse
 import asyncio
 import functools
+import os
 from pathlib import Path
 import signal
+import time
 
 
 import daemon
@@ -38,50 +40,145 @@ import inspect
 from pprint import pprint
 
 DEFAULT_RATE = .1  # seconds
+DUAL_ROLE_PRESS_WAIT = .1
+DUAL_ROLE_PRESS_WAIT_LONG = .3
 repeat_tasks = {}
 remapped_tasks = {}
+
+MAX_SPEED = 1000  # px/sec
+MIN_SPEED = 200
+POINTER_RATE = 10  # ms
+POINTER_ACCELERAION_DELAY = 50  # ms
+POINTER_ACCELERATION_TIME = 300  # ms
+POINTER_RETENTION = POINTER_RATE * 2
+_pointer_speed = None
+pointer_lastaccess = time.time()
+pointer_start = None
+
+
+def pointer_speed():
+    global pointer_lastaccess
+    global _pointer_speed
+    global pointer_start
+
+    now = time.time()
+
+    if now - pointer_lastaccess > POINTER_RETENTION / 1000:
+        _pointer_speed = MIN_SPEED
+        pointer_start = now
+
+    elapsed = now - pointer_start
+
+    """
+
+    _pointer_speed = (MIN_SPEED / 1000 + elapsed_ms * (MAX_SPEED - MIN_SPEED) / 1000 / POINTER_ACCELERATION_TIME) * POINTER_RATE
+    max_pointer_speed = MAX_SPEED / 1000 * POINTER_RATE
+    if _pointer_speed >= MAX_SPEED / 1000 * POINTER_RATE:
+        _pointer_speed = max_pointer_speed
+    """
+    if now - pointer_start > POINTER_ACCELERAION_DELAY / 1000:
+        _pointer_speed = MIN_SPEED + elapsed * (MAX_SPEED - MIN_SPEED) / (POINTER_ACCELERATION_TIME - POINTER_ACCELERAION_DELAY) * 1000
+    if _pointer_speed > MAX_SPEED:
+        _pointer_speed = MAX_SPEED
+    pointer_lastaccess = now
+    return int(_pointer_speed / 1000 * POINTER_RATE)
+
+
+def pointer_speed_rev():
+    return -pointer_speed()
+
+
+def press_key(output, event):
+    for val in (1, 0):
+        event.value = val
+        output.write_event(event)
+        output.syn()
+
 
 @asyncio.coroutine
 def handle_events(input, output, remappings, modifier_groups):
     active_group = {}
+    pressed_keys = {}
     while True:
         events = yield from input.async_read()  # noqa
         for event in events:
-            if not active_group:
+            if 'name' not in active_group:
                 active_mappings = remappings
             else:
-                active_mappings =  modifier_groups[active_group['name']]
-
-            if (event.code == active_group.get('code') or
-                    (event.code in active_mappings and 'modifier_group' in active_mappings.get(event.code)[0])):
+                active_mappings = remappings.copy()
+                active_mappings.update(modifier_groups[active_group['name']])
+            if (event.code not in repeat_tasks and (event.code == active_group.get('code') or
+                    (event.code in active_mappings and 'modifier_group' in active_mappings.get(event.code)[0]))):
                 if event.value == 1:
                     active_group['name'] = active_mappings[event.code][0]['modifier_group']
                     active_group['code'] = event.code
+                    active_group['entered'] = time.time()
                 elif event.value == 0:
+                    if 'entered' not in active_group:
+                        output.write_event(event)
+                        output.syn()
+                    elif time.time() - active_group['entered'] < DUAL_ROLE_PRESS_WAIT_LONG:
+                        press_key(output, event)
+                        #repeat_tasks[event.code] = asyncio.ensure_future(
+                        #    repeat_event(event, .4, 1, [1, 0], output, event.code))
                     active_group = {}
             else:
-                if event.code in active_mappings:
-                    remap_event(output, event, active_mappings[event.code])
+                if event.code in active_mappings and 'modifier_group' not in active_mappings.get(event.code)[0]:
+                    active_group['is_used'] = True
+                key_mapping = active_mappings.get(event.code, [])
+                if event.value == 1 and event.code in active_mappings:
+                    pressed_keys[event.code] = active_mappings[event.code]
+                    remap_event(output, event, key_mapping)
+                elif event.value == 0 and event.code in pressed_keys:
+                    key_mapping = pressed_keys.pop(event.code)
+                    remap_event(output, event, key_mapping)
                 else:
                     output.write_event(event)
                     output.syn()
 
 
 @asyncio.coroutine
-def repeat_event(event, rate, count, values, output):
+def repeat_event(event, rate, count, values, output, original_code=None):
     if count == 0:
         count = -1
-    while count is not 0:
+    while count != 0:
         count -= 1
         for value in values:
+            if callable(value):
+                value = value()
             event.value = value
             output.write_event(event)
             output.syn()
         yield from asyncio.sleep(rate)
+    #del repeat_tasks[original_code]
+
+
+DUAL_ROLE_KEYS_PRESSED = dict()
 
 
 def remap_event(output, event, event_remapping):
     for remapping in event_remapping:
+        if {'tap', 'hold'} <= remapping.keys():
+            event.code = remapping['hold']
+            output.write_event(event)
+            output.syn()
+            if event.value == 1:
+                DUAL_ROLE_KEYS_PRESSED[event.code] = time.time()
+            elif event.value == 0:
+                press_time = DUAL_ROLE_KEYS_PRESSED.pop(event.code, None)
+                if press_time and time.time() - press_time < DUAL_ROLE_PRESS_WAIT:
+                    original_code = event.code
+                    event.code = remapping['tap']
+                    press_key(output, event)
+                    event.code = original_code
+            continue
+        elif 'shell' in remapping:
+            os.system(remapping['shell'])
+            continue
+        elif 'code' not in remapping:
+            output.write_event(event)
+            output.syn()
+            continue
         original_code = event.code
         event.code = remapping['code']
         event.type = remapping.get('type', None) or event.type
@@ -94,8 +191,8 @@ def remap_event(output, event, event_remapping):
                 output.write_event(event)
                 output.syn()
         else:
-            key_down = event.value is 1
-            key_up = event.value is 0
+            key_down = event.value == 1
+            key_up = event.value == 0
             count = remapping.get('count', 0)
 
             if not (key_up or key_down):
@@ -124,7 +221,7 @@ def remap_event(output, event, event_remapping):
                     repeat_task.cancel()
                 if key_down:
                     repeat_tasks[original_code] = asyncio.ensure_future(
-                        repeat_event(event, rate, count, values, output))
+                        repeat_event(event, rate, count, values, output, original_code))
 
 
 # Parses yaml config file and outputs normalized configuration.
@@ -221,15 +318,20 @@ def normalize_value(mapping):
     value = mapping.get('value')
     if value is None or type(value) is list:
         return
+    elif type(value) is str and 'POINTER_SPEED' in value:
+        if value.startswith('-'):
+            mapping['value'] = pointer_speed_rev
+        else:
+            mapping['value'] = pointer_speed
+
     mapping['value'] = [mapping['value']]
 
 
 def resolve_ecodes(by_name):
     def resolve_mapping(mapping):
-        if 'code' in mapping:
-            mapping['code'] = ecodes.ecodes[mapping['code']]
-        if 'type' in mapping:
-            mapping['type'] = ecodes.ecodes[mapping['type']]
+        for key in ('code', 'type', 'tap', 'hold'):
+            if key in mapping:
+                mapping[key] = ecodes.ecodes[mapping[key]]
         return mapping
     return {ecodes.ecodes[key]: list(map(resolve_mapping, mappings))
             for key, mappings in by_name.items()}
@@ -286,6 +388,7 @@ def register_device(device):
                 extended.update([remapping['code']])
 
     caps[ecodes.EV_KEY] = list(extended)
+    caps[ecodes.EV_REL] = [ecodes.REL_X, ecodes.REL_Y, ecodes.REL_WHEEL, ecodes.REL_HWHEEL]
     output = UInput(caps, name=device['output_name'])
     asyncio.ensure_future(handle_events(input, output, remappings, modifier_groups))
 
@@ -303,6 +406,9 @@ def run_loop(args):
     config = load_config(args.config_file)
     for device in config['devices']:
         register_device(device)
+
+    if 'run_shell_on_start' in config:
+        os.system(config['run_shell_on_start'])
 
     loop = asyncio.get_event_loop()
     loop.add_signal_handler(signal.SIGTERM,
@@ -373,6 +479,7 @@ def main():
             run_loop(args)
     else:
         run_loop(args)
+
 
 if __name__ == '__main__':
     main()
