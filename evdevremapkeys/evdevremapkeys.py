@@ -54,6 +54,7 @@ POINTER_RETENTION = POINTER_RATE * 2
 _pointer_speed = None
 pointer_lastaccess = time.time()
 pointer_start = None
+idle_time = time.time()
 
 
 def pointer_speed():
@@ -96,11 +97,24 @@ def press_key(output, event):
 
 
 @asyncio.coroutine
+def inactivity_tremor(output):
+    while True:
+        if time.time() - idle_time > 5:
+            for val in (1, -1):
+                output.write(evdev.ecodes.EV_REL, evdev.ecodes.REL_X, val)
+                output.syn()
+        yield from asyncio.sleep(1)
+
+
+@asyncio.coroutine
 def handle_events(input, output, remappings, modifier_groups):
+    global idle_time
     active_group = {}
     pressed_keys = {}
     while True:
         events = yield from input.async_read()  # noqa
+        idle_time = time.time()
+
         for event in events:
             if 'name' not in active_group:
                 active_mappings = remappings
@@ -390,7 +404,9 @@ def register_device(device):
     caps[ecodes.EV_KEY] = list(extended)
     caps[ecodes.EV_REL] = [ecodes.REL_X, ecodes.REL_Y, ecodes.REL_WHEEL, ecodes.REL_HWHEEL]
     output = UInput(caps, name=device['output_name'])
+    loop = asyncio.get_event_loop()
     asyncio.ensure_future(handle_events(input, output, remappings, modifier_groups))
+    loop.run_until_complete(inactivity_tremor(output))
 
 
 @asyncio.coroutine
